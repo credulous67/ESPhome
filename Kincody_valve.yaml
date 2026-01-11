@@ -54,7 +54,7 @@ binary_sensor:
       - delayed_on_off: 100ms
 
   - platform: gpio
-    name: "vavle-upstairs-open"
+    name: "valve-upstairs-open"
     pin:
       number: GPIO39
       inverted: true
