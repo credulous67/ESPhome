@@ -132,6 +132,18 @@ binary_sensor:
     water_over_temp:
       name: Water Overtemperature
       entity_category: diagnostic      
+  - platform: homeassistant
+    id: valve_downstairs_open
+    entity_id: binary_sensor.kincody_valve_valve_downstairs_open
+  - platform: homeassistant
+    id: valve_upstairs_open
+    entity_id: binary_sensor.kincody_valve_valve_upstairs_open
+  - platform: homeassistant
+    id: relay_downstairs
+    entity_id: switch.kincody_valve_relay_downstairs
+  - platform: homeassistant
+    id: relay_upstairs
+    entity_id: switch.kincody_valve_relay_upstairs
 
 
 # Enable tracking bluetooth low energy devices using your ESP32 node.
