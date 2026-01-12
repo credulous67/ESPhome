@@ -1,6 +1,16 @@
 # DIYLESS Thermostat
 # https://diyless.com/product/opentherm-thermostat
 
+substitutions:
+  # HOME ASSISTANT ENTITIES (Remote Devices)
+  # The Relays controlling the motors
+  entity_relay_upstairs: "switch.kincody_valve_relay_upstairs"
+  entity_relay_downstairs: "switch.kincody_valve_relay_downstairs"
+
+  # The Feedback Sensors (The Orange Wires)
+  # Replace these with the actual sensor IDs that detect if the valves are open
+  entity_feedback_upstairs: "binary_sensor.kincody_valve_valve_upstairs_open"
+  entity_feedback_downstairs: "binary_sensor.kincody_valve_valve_downstairs_open"
 esphome:
   name: diyless-thermostat
   friendly_name: DIYLESS Thermostat
@@ -52,19 +62,58 @@ switch:
   - platform: opentherm
     ch_enable:
       id: ch_enable
-      name: "Heating"
+      name: "Heating downstairs"
+      restore_mode: RESTORE_DEFAULT_OFF
+      internal: false
+    ch2_active:
+      id: ch2_active
+      name: "Heating upstairstairs"
       restore_mode: RESTORE_DEFAULT_OFF
       internal: false
     dhw_enable:
       id: dhw_enable
       name: "Hot Water"
       restore_mode: RESTORE_DEFAULT_OFF
+  - platform: template
+    id: proxy_relay_upstairs
+    name: "Proxy Relay Upstairs"
+    internal: true
+    turn_on_action:
+      - homeassistant.service:
+          service: switch.turn_on
+          data:
+            entity_id: ${entity_relay_upstairs}
+    turn_off_action:
+      - homeassistant.service:
+          service: switch.turn_off
+          data:
+            entity_id: ${entity_relay_upstairs}
+
+  - platform: template
+    id: proxy_relay_downstairs
+    name: "Proxy Relay Downstairs"
+    internal: true
+    turn_on_action:
+      - homeassistant.service:
+          service: switch.turn_on
+          data:
+            entity_id: ${entity_relay_downstairs}
+    turn_off_action:
+      - homeassistant.service:
+          service: switch.turn_off
+          data:
+            entity_id: ${entity_relay_downstairs}
 
 # Use outputs to control numerical values like Central Heating setpoint using some automatic algorithms
 output:
   - platform: opentherm
-    t_set:
+    t_set: #downstairs
       id: ch_setpoint
+      min_value: 1
+      max_value: 80
+      zero_means_zero: true
+    t_set_ch2: #upstairs
+      id: ch2_setpoint
       min_value: 1
       max_value: 80
       zero_means_zero: true
@@ -288,8 +337,20 @@ climate:
           - lambda: 'return id(clim_down).mode == CLIMATE_MODE_OFF;'
           then:
             - switch.turn_off: ch_enable
+#            - switch.turn_off: proxy_relay_downstairs
+#            - id(proxy_relay_downstairs).turn_off
+            - homeassistant.action:
+                action: switch.turn_off
+                data_template:
+                  entity_id: switch.kincody_valve_relay_downstairs
           else:
             - switch.turn_on: ch_enable
+#            - switch.turn_on: proxy_relay_downstairs
+#            - id(proxy_relay_downstairs).turn_on
+            - homeassistant.action:
+                action: switch.turn_on
+                data_template:
+                  entity_id: switch.kincody_valve_relay_downstairs
           
       - logger.log:
           format: "Climate DOWN state updated - Mode: %s, Action: %s, Current: %.2f°C, Target: %.2f°C"
@@ -299,7 +360,7 @@ climate:
   - platform: pid
     id: clim_up
     name: "Heating Upstairs"
-    heat_output: ch_setpoint
+    heat_output: ch2_setpoint
     default_target_temperature: 19
     sensor: upstairs_temp #ble_sensor|dallas_sensor
     visual:
@@ -325,9 +386,21 @@ climate:
           condition:
           - lambda: 'return id(clim_up).mode == CLIMATE_MODE_OFF;'
           then:
-            - switch.turn_off: ch_enable
+            - switch.turn_off: ch2_active
+#            - switch.turn_off: proxy_relay_upstairs
+#            - id(proxy_relay_upstairs).turn_off
+            - homeassistant.action:
+                action: switch.turn_off
+                data_template:
+                  entity_id: switch.kincody_valve_relay_upstairs
           else:
-            - switch.turn_on: ch_enable
+            - switch.turn_on: ch2_active
+#            - switch.turn_on: proxy_relay_upstairs
+#            - id(proxy_relay_upstairs).turn_on
+            - homeassistant.action:
+                action: switch.turn_on
+                data_template:
+                  entity_id: switch.kincody_valve_relay_upstairs
           
       - logger.log:
           format: "Climate UP state updated - Mode: %s, Action: %s, Current: %.2f°C, Target: %.2f°C"
