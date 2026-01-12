@@ -1,408 +1,310 @@
-# DIYLESS Thermostat
-# https://diyless.com/product/opentherm-thermostat
+# -----------------------------------------------------------------------------
+# PROJECT: Dual-Zone OpenTherm S-Plan Controller
+# DEVICE: ESP32 NodeMCU / Wemos D1 Mini ESP32
+# DESCRIPTION: PID modulated heating with logic interlocks for external valves.
+# -----------------------------------------------------------------------------
 
 substitutions:
-  # HOME ASSISTANT ENTITIES (Remote Devices)
-  # The Relays controlling the motors
-  entity_relay_upstairs: "switch.kincody_valve_relay_upstairs"
-  entity_relay_downstairs: "switch.kincody_valve_relay_downstairs"
+  devicename: "central-heating-controller"
+  friendly_name: "Heating Logic Board"
+  # Boiler Limits
+  max_flow_temp: "70.0"   # Maximum water temp the boiler is allowed to output
+  min_flow_temp: "35.0"   # Minimum effective temp (below this, efficiency gains diminish or boiler cycles)
+  # PID Thresholds
+  pid_deadband: "0.05"    # 5% demand required to open valves (prevents micro-firing)
 
-  # The Feedback Sensors (The Orange Wires)
-  # Replace these with the actual sensor IDs that detect if the valves are open
-  entity_feedback_upstairs: "binary_sensor.kincody_valve_valve_upstairs_open"
-  entity_feedback_downstairs: "binary_sensor.kincody_valve_valve_downstairs_open"
 esphome:
-  name: diyless-thermostat
-  friendly_name: DIYLESS Thermostat
+  name: ${devicename}
+  friendly_name: ${friendly_name}
 
 esp32:
-  board: esp32dev
+  board: wemos_d1_mini32 #nodemcu-32s  # Change to 'wemos_d1_mini32' if using the D1 Mini form factor
   framework:
     type: arduino
 
-# Enable logging
+# -----------------------------------------------------------------------------
+# LOGGING & DEBUGGING
+# -----------------------------------------------------------------------------
 logger:
   level: DEBUG
+  baud_rate: 115200
+  logs:
+    esp32_ble_tracker: WARN
+    sensor: INFO
+    binary_sensor: INFO
 
-# Enable Home Assistant API
-api:
-  encryption:
-     key: !secret HAapikey_D1mini_opentherm
-
-# Enable Over-The-Air (OTA) platform to remotely install modified/updated firmware
-ota:
- - platform: esphome
-   password: !secret otapw_D1mini_opentherm
-
+# -----------------------------------------------------------------------------
+# CONNECTIVITY
+# -----------------------------------------------------------------------------
 wifi:
   ssid: !secret wifi_ssid
   password: !secret wifi_password
-
-  # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
     ssid: !secret fb_hotspot_ssid_D1mini_opentherm
     password: !secret fb_hotspot_pw_D1mini_opentherm
 
-# Enable captive portal as fallback mechanism for when connecting to the configured WiFi fails.
-captive_portal:
+# Home Assistant API
+api:
+  encryption:
+    key: !secret HAapikey_D1mini_opentherm
 
-# Enable simple web server to remotelly control the device using web interface
-web_server:  
-  
-# Enable OpenTherm communication
-# https://esphome.io/components/opentherm.html
+ota:
+  - platform: esphome
+    password: !secret otapw_D1mini_opentherm
+
+# -----------------------------------------------------------------------------
+# HARDWARE: OPENTHERM
+# -----------------------------------------------------------------------------
 opentherm:
-  in_pin: 21 # WeMos D1 Mini ESP32 input pin for stacking with Master OpenTherm Shield
-  out_pin: 22 # WeMos D1 Mini ESP32 output pin for stacking with Master OpenTherm Shield
+  in_pin: 21   # ESP32 RX <- Shield OUT
+  out_pin: 22  # ESP32 TX -> Shield IN
+  id: ot_hub
 
+# We must define these entities so we can control them from lambdas/scripts
+number:
+  - platform: opentherm
+    t_set:
+      id: ot_t_set
+      name: "Boiler Control Setpoint"
+      min_value: 0
+      max_value: 90
+      step: 1
 
-# Use switches to enable/disable central heating and hot water from HA interface
-# https://esphome.io/components/opentherm.html#switch
 switch:
   - platform: opentherm
     ch_enable:
-      id: ch_enable
-      name: "Heating downstairs"
-      restore_mode: RESTORE_DEFAULT_OFF
-      internal: false
-    ch2_active:
-      id: ch2_active
-      name: "Heating upstairstairs"
-      restore_mode: RESTORE_DEFAULT_OFF
-      internal: false
-    dhw_enable:
-      id: dhw_enable
-      name: "Hot Water"
-      restore_mode: RESTORE_DEFAULT_OFF
-  - platform: template
-    id: proxy_relay_upstairs
-    name: "Proxy Relay Upstairs"
-    internal: true
-    turn_on_action:
-      - homeassistant.service:
-          service: switch.turn_on
-          data:
-            entity_id: ${entity_relay_upstairs}
-    turn_off_action:
-      - homeassistant.service:
-          service: switch.turn_off
-          data:
-            entity_id: ${entity_relay_upstairs}
+      id: ot_ch_enable
+      name: "Boiler CH Enabled"
 
-  - platform: template
-    id: proxy_relay_downstairs
-    name: "Proxy Relay Downstairs"
-    internal: true
-    turn_on_action:
-      - homeassistant.service:
-          service: switch.turn_on
-          data:
-            entity_id: ${entity_relay_downstairs}
-    turn_off_action:
-      - homeassistant.service:
-          service: switch.turn_off
-          data:
-            entity_id: ${entity_relay_downstairs}
-
-# Use outputs to control numerical values like Central Heating setpoint using some automatic algorithms
-output:
-  - platform: opentherm
-    t_set: #downstairs
-      id: ch_setpoint
-      min_value: 1
-      max_value: 80
-      zero_means_zero: true
-    t_set_ch2: #upstairs
-      id: ch2_setpoint
-      min_value: 1
-      max_value: 80
-      zero_means_zero: true
-
-
-# Use numbers to control numerical values like CH/DHW setpoint from HA interface
-# https://esphome.io/components/opentherm.html#numerical-values 
-number:
-  # - platform: opentherm
-  #   t_set:
-  #     id: ch_setpoint
-  #     name: "Heating Setpoint"
-  #     step: 1
-  #     min_value: 30
-  #     max_value: 80
-  #     restore_value: true
-  #     initial_value: 60
-  - platform: opentherm
-    t_dhw_set:
-      id: dhw_setpoint
-      name: "How Water Setpoint"
-      step: 1
-      min_value: 30
-      max_value: 80
-      restore_value: true
-      initial_value: 60
-
-# Use binary sensors (on/off) to monitor the states and conditions of different boiler entities.
-# https://esphome.io/components/opentherm.html#binary-sensor
-binary_sensor:
-  - platform: opentherm
-    fault_indication:
-      id: fault_indication
-      name: "Boiler Fault"
-      entity_category: diagnostic
-    ch_active:
-      id: ch_active
-      name: "Heating Active"
-    dhw_active:
-      id: dhw_active
-      name: "Hot Water Active"
-    flame_on:
-      id: flame_on
-      name: "Flame On"
-    diagnostic_indication:
-      id: diagnostic_indication
-      name: "Boiler Diagnostic"
-      entity_category: diagnostic
-
-    service_request:
-      name: Service Required
-      entity_category: diagnostic
-    lockout_reset:
-      name: Lockout Reset
-      entity_category: diagnostic
-    low_water_pressure:
-      name: Low Water Pressure Fault
-      entity_category: diagnostic
-    flame_fault:
-      name: Flame Fault
-      entity_category: diagnostic
-    air_pressure_fault:
-      name: Air Pressure Fault
-      entity_category: diagnostic
-    water_over_temp:
-      name: Water Overtemperature
-      entity_category: diagnostic      
-  - platform: homeassistant
-    id: valve_downstairs_open
-    entity_id: binary_sensor.kincody_valve_valve_downstairs_open
-  - platform: homeassistant
-    id: valve_upstairs_open
-    entity_id: binary_sensor.kincody_valve_valve_upstairs_open
-  - platform: homeassistant
-    id: relay_downstairs
-    entity_id: switch.kincody_valve_relay_downstairs
-  - platform: homeassistant
-    id: relay_upstairs
-    entity_id: switch.kincody_valve_relay_upstairs
-
-
-# Enable tracking bluetooth low energy devices using your ESP32 node.
+# -----------------------------------------------------------------------------
+# HARDWARE: BLUETOOTH SENSORS (XIAOMI PVVX)
+# -----------------------------------------------------------------------------
 esp32_ble_tracker:
-
-#Enable 1-Wire bus for DS18B20 temperature sensor
-# one_wire:
-#   - platform: gpio
-#     pin: 14 # WeMos D1 Mini ESP32 1-wire pin for stacking with Master OpenTherm Shield
+  scan_parameters:
+    interval: 300ms
+    window: 200ms
 
 sensor:
-# Xiaomi Bluetooth Temperature and Humidity sensor with custom firmware
-# https://esphome.io/components/sensor/xiaomi_ble#lywsd03mmc
-- platform: pvvx_mithermometer
-  id: upstairs_thermometer
-  mac_address: "A4:C1:38:57:0F:22" #your sensor MAC
-  temperature:
-    name: "Bedroom1 Temperature"
-    id: upstairs_temp
-  humidity:
-    name: "Bedroom1 Humidity"
-  battery_level:
-    name: "Bedroom1 Battery-Level"
-  battery_voltage:
-    name: "Bedroom1 Battery-Voltage"   
-- platform: pvvx_mithermometer
-  id: downstairs_thermometer
-  mac_address: "A4:C1:38:AA:DC:57" #your sensor MAC
-  temperature:
-    name: "Livingroom Temperature"
-    id: downstairs_temp
-  humidity:
-    name: "Livingroom Humidity"
-  battery_level:
-    name: "Livingroom Battery-Level"
-  battery_voltage:
-    name: "Livingroom Battery-Voltage"   
+  # ---------------------------------------------------------------------------
+  # Temperature Inputs
+  # ---------------------------------------------------------------------------
+  - platform: pvvx_mithermometer
+    mac_address: "A4:C1:38:AA:DC:57"  # <--- UPDATE THIS REAL MAC
+    temperature:
+      name: "Downstairs Room Temp"
+      id: temp_downstairs
+    humidity:
+      name: "Downstairs Humidity"
+    battery_level:
+      name: "Downstairs Battery"
 
-# Wired DALLAS DS18B20 sensor
-# - platform: dallas_temp
-#   id: dallas_sensor
-#   name: "Wired Sensor Temperature"
-#   update_interval: 30s
-#   accuracy_decimals: 2
-#   filters:
-#     - sliding_window_moving_average:
-#         window_size: 5
-#         send_every: 2
-#     - heartbeat: 1s
+  - platform: pvvx_mithermometer
+    mac_address: "A4:C1:38:57:0F:22"  # <--- UPDATE THIS REAL MAC
+    temperature:
+      name: "Upstairs Room Temp"
+      id: temp_upstairs
+    humidity:
+      name: "Upstairs Humidity"
+    battery_level:
+      name: "Upstairs Battery"
 
-# OpenTherm sensors
-# https://esphome.io/components/opentherm.html#sensor
-- platform: opentherm
-  t_boiler:
-    id: ch_temperature
-    name: "Heating Temperature"
-  t_dhw:
-    id: dhw_temperature
-    name: "Hot Water Temperature"
+  # ---------------------------------------------------------------------------
+  # Boiler Feedback Sensors (OpenTherm)
+  # ---------------------------------------------------------------------------
+  - platform: opentherm
+    t_boiler:
+      name: "Boiler Flow Temperature"
+      id: boiler_actual_flow
+    t_ret:
+      name: "Boiler Return Temperature"
+    rel_mod_level:
+      name: "Boiler Modulation"
+      id: boiler_mod_level
+    ch_pressure:
+      name: "System Pressure"
 
-  rel_mod_level:
-    id: rel_mod_level
-    name: "Boiler Relative Modulation Level"
-  t_ret:
-    name: Return Water Temperature
+# -----------------------------------------------------------------------------
+# INPUTS: VALVE STATUS FROM HOME ASSISTANT
+# -----------------------------------------------------------------------------
+binary_sensor:
+  - platform: homeassistant
+    name: "Valve Downstairs End-Stop"
+    entity_id: binary_sensor.kincody_valve_valve_downstairs_open
+    id: valve_fb_downstairs
+  
+  - platform: homeassistant
+    name: "Valve Upstairs End-Stop"
+    entity_id: binary_sensor.kincody_valve_valve_upstairs_open
+    id: valve_fb_upstairs
 
-  max_t_set:
-    name: Max CH Setpoint    
-  max_t_set_ub:
-    name: Upper Bound of CH Setpoint    
-  max_t_set_lb:  
-    name: Lower Bound CH Setpoint
-  t_exhaust:    
-    name: Boiler Exhaust Temperature
-    entity_category: diagnostic
-  ch_pressure:    
-    name: Water Pressure
-    entity_category: diagnostic
-  oem_fault_code:
-    name: OEM Fault Code
-    entity_category: diagnostic
-  oem_diagnostic_code:
-    name: OEM Diagnostic Code
-    entity_category: diagnostic
+  # Boiler Status
+  - platform: opentherm
+    flame_on:
+      name: "Flame Status"
+    fault_indication:
+      name: "Fault Status"
 
-- platform: template
-  name: "PID Climate DOWN Output"
-  unit_of_measurement: "%"
-  lambda: |-
-    return id(clim_down).get_output_value() * 100.0;
-  update_interval: 5s
-- platform: template
-  name: "PID Climate UP Output"
-  unit_of_measurement: "%"
-  lambda: |-
-    return id(clim_up).get_output_value() * 100.0;
-  update_interval: 5s
+# -----------------------------------------------------------------------------
+# LOGIC STORE: GLOBAL VARIABLES
+# -----------------------------------------------------------------------------
+globals:
+  - id: pid_out_downstairs
+    type: float
+    restore_value: no
+    initial_value: '0.0'
+  - id: pid_out_upstairs
+    type: float
+    restore_value: no
+    initial_value: '0.0'
 
-# PID sensors
-#- platform: pid
-#  name: "PID result"
-#  type: RESULT
-#  name: "PID heat_output"
-#  type: HEAT
-#  name: "PID P"
-#  type: PROPORTIONAL
-#  name: "PID I"
-#  type: INTEGRAL
-#  name: "PID D"
-#  type: DERIVATIVE
-
-# Use PID Climate component for automatic boiler setpoint calculation
-# https://esphome.io/components/climate/pid
+# -----------------------------------------------------------------------------
+# CLIMATE CONTROLLERS (PID)
+# -----------------------------------------------------------------------------
 climate:
+  # Downstairs Controller
   - platform: pid
-    id: clim_down 
-    name: "Heating Downstairs"
-    heat_output: ch_setpoint
-    default_target_temperature: 19
-    sensor: downstairs_temp #ble_sensor|dallas_sensor
+    name: "Downstairs Thermostat"
+    id: cli_down
+    sensor: temp_downstairs
+    default_target_temperature: 20
+    heat_output: out_pid_down
+    control_parameters:
+      kp: 0.6
+      ki: 0.005
+      kd: 1.5
     visual:
-      min_temperature: 15
-      max_temperature: 30
-      temperature_step:
-        target_temperature: 0.5
-        current_temperature: 0.1
-    control_parameters: 
-      kp: 0.77
-      ki: 0.05
-      kd: 0
-      output_averaging_samples: 10
-    deadband_parameters:
-      threshold_high: 0.5
-      threshold_low: -0.5      
-      kp_multiplier: 0
-      ki_multiplier: 0.15
-      kd_multiplier: 0.0
-      deadband_output_averaging_samples: 15
-    on_state:
-      - if:
-          condition:
-          - lambda: 'return id(clim_down).mode == CLIMATE_MODE_OFF;'
-          then:
-            - switch.turn_off: ch_enable
-#            - switch.turn_off: proxy_relay_downstairs
-#            - id(proxy_relay_downstairs).turn_off
-            - homeassistant.action:
-                action: switch.turn_off
-                data_template:
-                  entity_id: switch.kincody_valve_relay_downstairs
-          else:
-            - switch.turn_on: ch_enable
-#            - switch.turn_on: proxy_relay_downstairs
-#            - id(proxy_relay_downstairs).turn_on
-            - homeassistant.action:
-                action: switch.turn_on
-                data_template:
-                  entity_id: switch.kincody_valve_relay_downstairs
-          
-      - logger.log:
-          format: "Climate DOWN state updated - Mode: %s, Action: %s, Current: %.2f°C, Target: %.2f°C"
-          args: [ 'std::string(LOG_STR_ARG(climate_mode_to_string(x.mode))).c_str()', 'std::string(LOG_STR_ARG(climate_action_to_string(x.action))).c_str()', 'x.current_temperature', 'x.target_temperature' ]
-          level: INFO
+      min_temperature: 10
+      max_temperature: 25
+      temperature_step: 0.5
 
+  # Upstairs Controller
   - platform: pid
-    id: clim_up
-    name: "Heating Upstairs"
-    heat_output: ch2_setpoint
+    name: "Upstairs Thermostat"
+    id: cli_up
+    sensor: temp_upstairs
     default_target_temperature: 19
-    sensor: upstairs_temp #ble_sensor|dallas_sensor
-    visual:
-      min_temperature: 15
-      max_temperature: 30
-      temperature_step:
-        target_temperature: 0.5
-        current_temperature: 0.1
-    control_parameters: 
-      kp: 0.77
-      ki: 0.05
-      kd: 0
-      output_averaging_samples: 10
-    deadband_parameters:
-      threshold_high: 0.5
-      threshold_low: -0.5      
-      kp_multiplier: 0
-      ki_multiplier: 0.15
-      kd_multiplier: 0.0
-      deadband_output_averaging_samples: 15
-    on_state:
+    heat_output: out_pid_up
+    control_parameters:
+      kp: 0.6
+      ki: 0.005
+      kd: 1.5
+
+# -----------------------------------------------------------------------------
+# OUTPUT INTERCEPTION (The Logic Layer)
+# -----------------------------------------------------------------------------
+output:
+  - platform: template
+    id: out_pid_down
+    type: float
+    write_action:
+      - lambda: |-
+          id(pid_out_downstairs) = state;
       - if:
           condition:
-          - lambda: 'return id(clim_up).mode == CLIMATE_MODE_OFF;'
+            lambda: 'return state > ${pid_deadband};'
           then:
-            - switch.turn_off: ch2_active
-#            - switch.turn_off: proxy_relay_upstairs
-#            - id(proxy_relay_upstairs).turn_off
-            - homeassistant.action:
-                action: switch.turn_off
-                data_template:
+            - homeassistant.service:
+                service: switch.turn_on
+                data:
+                  entity_id: switch.kincody_valve_relay_downstairs
+          else:
+            - homeassistant.service:
+                service: switch.turn_off
+                data:
+                  entity_id: switch.kincody_valve_relay_downstairs
+      - script.execute: arbitrate_boiler_demand
+
+  - platform: template
+    id: out_pid_up
+    type: float
+    write_action:
+      - lambda: |-
+          id(pid_out_upstairs) = state;
+      - if:
+          condition:
+            lambda: 'return state > ${pid_deadband};'
+          then:
+            - homeassistant.service:
+                service: switch.turn_on
+                data:
                   entity_id: switch.kincody_valve_relay_upstairs
           else:
-            - switch.turn_on: ch2_active
-#            - switch.turn_on: proxy_relay_upstairs
-#            - id(proxy_relay_upstairs).turn_on
-            - homeassistant.action:
-                action: switch.turn_on
-                data_template:
+            - homeassistant.service:
+                service: switch.turn_off
+                data:
                   entity_id: switch.kincody_valve_relay_upstairs
+      - script.execute: arbitrate_boiler_demand
+
+# -----------------------------------------------------------------------------
+# MASTER ARBITRATION SCRIPT (The Interlock)
+# -----------------------------------------------------------------------------
+script:
+  - id: arbitrate_boiler_demand
+    mode: restart
+    then:
+      - lambda: |-
+          // 1. Fetch Configuration & State
+          float max_t = ${max_flow_temp};
+          float deadband = ${pid_deadband};
           
-      - logger.log:
-          format: "Climate UP state updated - Mode: %s, Action: %s, Current: %.2f°C, Target: %.2f°C"
-          args: [ 'std::string(LOG_STR_ARG(climate_mode_to_string(x.mode))).c_str()', 'std::string(LOG_STR_ARG(climate_action_to_string(x.action))).c_str()', 'x.current_temperature', 'x.target_temperature' ]
-          level: INFO
+          float d_req = id(pid_out_downstairs);
+          float u_req = id(pid_out_upstairs);
+          
+          bool d_open = id(valve_fb_downstairs).state;
+          bool u_open = id(valve_fb_upstairs).state;
+          
+          // 2. Debugging Output
+          ESP_LOGD("logic", "=== HEATING LOGIC CYCLE ===");
+          ESP_LOGD("logic", "DOWNSTAIRS: Demand %.1f%% | Valve: %s", d_req * 100.0, d_open? "OPEN" : "CLOSED");
+          ESP_LOGD("logic", "UPSTAIRS:   Demand %.1f%% | Valve: %s", u_req * 100.0, u_open? "OPEN" : "CLOSED");
+          
+          // 3. Calculate Temperature Requirement per Zone
+          float d_target_temp = 0.0;
+          float u_target_temp = 0.0;
+          
+          if (d_req > deadband) {
+            if (d_open) {
+              d_target_temp = d_req * max_t;
+              ESP_LOGD("logic", ">> Downstairs Valid: Requesting %.1f C", d_target_temp);
+            } else {
+              ESP_LOGW("logic", ">> Downstairs WAITING: Valve not yet confirmed open.");
+            }
+          }
+          
+          if (u_req > deadband) {
+            if (u_open) {
+              u_target_temp = u_req * max_t;
+              ESP_LOGD("logic", ">> Upstairs Valid: Requesting %.1f C", u_target_temp);
+            } else {
+              ESP_LOGW("logic", ">> Upstairs WAITING: Valve not yet confirmed open.");
+            }
+          }
+          
+          // 4. Aggregate Demand (MAX Operator)
+          float final_setpoint = 0.0;
+          if (d_target_temp > final_setpoint) final_setpoint = d_target_temp;
+          if (u_target_temp > final_setpoint) final_setpoint = u_target_temp;
+          
+          // 5. Minimum Boiler constraints
+          if (final_setpoint > 0 && final_setpoint < ${min_flow_temp}) {
+             final_setpoint = ${min_flow_temp};
+             ESP_LOGD("logic", ">> Clamping to minimum flow temp %.1f C", final_setpoint);
+          }
+          
+          // 6. Execute OpenTherm Command via Number Entity
+          ESP_LOGI("logic", ">>> FINAL BOILER COMMAND: Setpoint %.1f C", final_setpoint);
+          
+          auto call = id(ot_t_set).make_call();
+          call.set_value(final_setpoint);
+          call.perform();
+          
+          // 7. Explicit CH Enable via Switch Entity
+          if (final_setpoint > 0) {
+            if (!id(ot_ch_enable).state) {
+               id(ot_ch_enable).turn_on();
+            }
+          } else {
+            if (id(ot_ch_enable).state) {
+               id(ot_ch_enable).turn_off();
+            }
+          }
