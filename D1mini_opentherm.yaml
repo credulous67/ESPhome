@@ -18,7 +18,7 @@ esphome:
   friendly_name: ${friendly_name}
 
 esp32:
-  board: wemos_d1_mini32 #nodemcu-32s  # Change to 'wemos_d1_mini32' if using the D1 Mini form factor
+  board: wemos_d1_mini32
   framework:
     type: arduino
 
@@ -122,6 +122,10 @@ sensor:
       id: boiler_mod_level
     ch_pressure:
       name: "System Pressure"
+    # NEW: DHW Temperature Sensor
+    t_dhw:
+      name: "DHW Temperature"
+      id: dhw_temp
 
 # -----------------------------------------------------------------------------
 # INPUTS: VALVE STATUS FROM HOME ASSISTANT
@@ -143,6 +147,10 @@ binary_sensor:
       name: "Flame Status"
     fault_indication:
       name: "Fault Status"
+    # NEW: DHW Active Status
+    dhw_active:
+      name: "DHW Active"
+      id: dhw_active_state
 
 # -----------------------------------------------------------------------------
 # LOGIC STORE: GLOBAL VARIABLES
