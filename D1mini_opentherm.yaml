@@ -9,7 +9,7 @@ substitutions:
   friendly_name: "Heating Logic Board"
   # Boiler Limits
   max_flow_temp: "70.0"   # Maximum water temp the boiler is allowed to output
-  min_flow_temp: "35.0"   # Minimum effective temp (below this, efficiency gains diminish or boiler cycles)
+  min_flow_temp: "30.0"   # Minimum effective temp (below this, efficiency gains diminish or boiler cycles)
   # PID Thresholds
   pid_deadband: "0.05"    # 5% demand required to open valves (prevents micro-firing)
 
@@ -32,6 +32,8 @@ logger:
     esp32_ble_tracker: WARN
     sensor: INFO
     binary_sensor: INFO
+    opentherm: INFO
+    pvvx_mithermometer: INFO
 
 # -----------------------------------------------------------------------------
 # CONNECTIVITY
@@ -126,6 +128,12 @@ sensor:
     t_dhw:
       name: "DHW Temperature"
       id: dhw_temp
+    t_dhw2:
+      name: "DHW2 Temperature"
+      id: dhw2_temp
+    dhw_flow_rate:
+      name: "DHW flow rate"
+      id: dhw_flow
 
 # -----------------------------------------------------------------------------
 # INPUTS: VALVE STATUS FROM HOME ASSISTANT
@@ -177,13 +185,13 @@ climate:
     default_target_temperature: 20
     heat_output: out_pid_down
     control_parameters:
-      kp: 0.6
-      ki: 0.005
-      kd: 1.5
+      kp: 0.3
+      ki: 0.004
+      kd: 0
     visual:
       min_temperature: 10
       max_temperature: 25
-      temperature_step: 0.5
+      temperature_step: 0.1
 
   # Upstairs Controller
   - platform: pid
@@ -193,13 +201,13 @@ climate:
     default_target_temperature: 19
     heat_output: out_pid_up
     control_parameters:
-      kp: 0.6
-      ki: 0.005
-      kd: 1.5
+      kp: 0.3
+      ki: 0.004
+      kd: 0
     visual:
       min_temperature: 10
       max_temperature: 25
-      temperature_step: 0.5
+      temperature_step: 0.1
 
 # -----------------------------------------------------------------------------
 # OUTPUT INTERCEPTION (The Logic Layer)
@@ -257,6 +265,7 @@ script:
       - lambda: |-
           // 1. Fetch Configuration & State
           float max_t = ${max_flow_temp};
+          float min_t = ${min_flow_temp};
           float deadband = ${pid_deadband};
           
           float d_req = id(pid_out_downstairs);
@@ -265,51 +274,58 @@ script:
           bool d_open = id(valve_fb_downstairs).state;
           bool u_open = id(valve_fb_upstairs).state;
           
-          // 2. Debugging Output
-          ESP_LOGD("logic", "=== HEATING LOGIC CYCLE ===");
-          ESP_LOGD("logic", "DOWNSTAIRS: Demand %.1f%% | Valve: %s", d_req * 100.0, d_open? "OPEN" : "CLOSED");
-          ESP_LOGD("logic", "UPSTAIRS:   Demand %.1f%% | Valve: %s", u_req * 100.0, u_open? "OPEN" : "CLOSED");
+          // Debug Header
+          ESP_LOGD("logic", "=== HEATING LOGIC CYCLE (SCALED) ===");
           
+          // 2. Define the Scaling Helper Function
+          // Maps PID (deadband -> 1.0) to (MinTemp -> MaxTemp)
+          auto calculate_setpoint = [&](float pid_val) -> float {
+            if (pid_val <= deadband) return 0.0;
+            
+            // Normalize the PID value so 0.05 becomes 0.0, and 1.0 remains 1.0
+            float normalized_pid = (pid_val - deadband) / (1.0 - deadband);
+            
+            // Scale to the boiler's range
+            return min_t + (normalized_pid * (max_t - min_t));
+          };
+
           // 3. Calculate Temperature Requirement per Zone
           float d_target_temp = 0.0;
           float u_target_temp = 0.0;
           
           if (d_req > deadband) {
             if (d_open) {
-              d_target_temp = d_req * max_t;
-              ESP_LOGD("logic", ">> Downstairs Valid: Requesting %.1f C", d_target_temp);
+              d_target_temp = calculate_setpoint(d_req);
+              ESP_LOGI("logic", ">> Down Demand %.1f%% -> Req %.1f C", d_req*100.0, d_target_temp);
             } else {
-              ESP_LOGW("logic", ">> Downstairs WAITING: Valve not yet confirmed open.");
+              ESP_LOGW("logic", ">> Down WAITING: Valve Closed");
             }
           }
           
           if (u_req > deadband) {
             if (u_open) {
-              u_target_temp = u_req * max_t;
-              ESP_LOGD("logic", ">> Upstairs Valid: Requesting %.1f C", u_target_temp);
+              u_target_temp = calculate_setpoint(u_req);
+              ESP_LOGI("logic", ">> Up   Demand %.1f%% -> Req %.1f C", u_req*100.0, u_target_temp);
             } else {
-              ESP_LOGW("logic", ">> Upstairs WAITING: Valve not yet confirmed open.");
+              ESP_LOGW("logic", ">> Up   WAITING: Valve Closed");
             }
           }
           
           // 4. Aggregate Demand (MAX Operator)
-          float final_setpoint = 0.0;
-          if (d_target_temp > final_setpoint) final_setpoint = d_target_temp;
-          if (u_target_temp > final_setpoint) final_setpoint = u_target_temp;
+          float final_setpoint = std::max(d_target_temp, u_target_temp);
           
-          // 5. Minimum Boiler constraints
-          if (final_setpoint > 0 && final_setpoint < ${min_flow_temp}) {
-             final_setpoint = ${min_flow_temp};
-             ESP_LOGD("logic", ">> Clamping to minimum flow temp %.1f C", final_setpoint);
+          // 5. Final Safety Clamp (Just in case math drifts slightly below min_t)
+          if (final_setpoint > 0 && final_setpoint < min_t) {
+             final_setpoint = min_t;
           }
-          
-          // 6. Execute OpenTherm Command via Number Entity
-          ESP_LOGI("logic", ">>> FINAL BOILER COMMAND: Setpoint %.1f C", final_setpoint);
+
+          // 6. Execute OpenTherm Command
+          ESP_LOGI("logic", ">>> FINAL SETPOINT: %.1f C", final_setpoint);
           
           auto call = id(ot_t_set).make_call();
           call.set_value(final_setpoint);
           call.perform();
-          
+
           // 7. Explicit CH Enable via Switch Entity
           if (final_setpoint > 0) {
             if (!id(ot_ch_enable).state) {
@@ -320,3 +336,4 @@ script:
                id(ot_ch_enable).turn_off();
             }
           }
+
