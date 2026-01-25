@@ -212,7 +212,7 @@ globals:
     initial_value: '0.0'
   - id: system_state
     type: int 
-    initial_value: '0' # 0=Idle, 1=Heating(wait), 2=Heating, 3=Harvest
+    initial_value: '0' # 0=Idle, 1=Heating(valve wait), 2=Heating, 3=Harvest(valve wait), 4=Harvest
 
 
 # -----------------------------------------------------------------------------
@@ -350,7 +350,6 @@ script:
           // STATE 2: HARVEST / OVERRUN
           // -------------------------------------------------------
           else if (flow_temp > harvest_lim) {
-            id(system_state) = 3;
             
             // A. Valve Strategy: OPEN BOTH
             id(valve_demand_up).publish_state(true);
@@ -358,6 +357,7 @@ script:
             
             // B. Safety Check & Harvest Enable
             if (valves_verified) {
+              id(system_state) = 4;
               // Keep CH Enable TRUE to power the pump.
               id(ot_ch_enable).turn_on();
 
@@ -365,6 +365,7 @@ script:
               id(ot_t_set).make_call().set_value(standby).perform();
               ESP_LOGD("logic", "HARVEST: Flow %.2f > %.2f. Recovering heat.", flow_temp, harvest_lim);
             } else {
+              id(system_state) = 3;
               // Valves should be opening, but aren't there yet.
               id(ot_ch_enable).turn_off();
               ESP_LOGW("logic", "HARVEST DELAY: Waiting for limit switches...");
