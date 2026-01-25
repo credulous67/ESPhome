@@ -33,7 +33,7 @@ logger:
   baud_rate: 115200
   logs:
     esp32_ble_tracker: WARN
-    sensor: DEBUG
+    sensor: INFO
     binary_sensor: INFO
     opentherm: INFO
     pvvx_mithermometer: INFO
@@ -134,12 +134,8 @@ sensor:
     ch_pressure:
       name: "System Pressure"
     # NEW: DHW Temperature Sensor
-    t_dhw:
-      name: "DHW Temperature"
-      id: dhw_temp
-    t_dhw2:
-      name: "DHW2 Temperature"
-      id: dhw2_temp
+    # t_dhw - does not populate from Ideal Logic boiler
+    # t_dhw2 - does not populate from Ideal Logic boiler
     dhw_flow_rate:
       name: "DHW flow rate"
       id: dhw_flow
