@@ -10,6 +10,9 @@ substitutions:
   # Boiler Limits
   max_flow_temp: "70.0"   # Maximum water temp the boiler is allowed to output
   min_flow_temp: "30.0"   # Minimum effective temp (below this, efficiency gains diminish or boiler cycles)
+  # Harvest thresholds
+  harvest_cutoff: "35.0"    # Stop pumping when water is below this
+  standby_setpoint: "10.0"  # Temp to request during harvest
   # PID Thresholds
   pid_deadband: "0.05"    # 5% demand required to open valves (prevents micro-firing)
 
@@ -49,6 +52,8 @@ wifi:
 api:
   encryption:
     key: !secret HAapikey_D1mini_opentherm
+  id: api_server
+  homeassistant_services: true
 
 ota:
   - platform: esphome
@@ -69,8 +74,8 @@ number:
       id: ot_t_set
       name: "Boiler Control Setpoint"
       min_value: 0
-      max_value: 90
-      step: 1
+      max_value: 80
+      step: 0.1
 
 switch:
   - platform: opentherm
@@ -116,7 +121,11 @@ sensor:
   - platform: opentherm
     t_boiler:
       name: "Boiler Flow Temperature"
-      id: boiler_actual_flow
+      id: boiler_flow_temp
+      # Trigger logic update on every temp change for responsiveness
+      on_value:
+        then:
+          - script.execute: logic_engine
     t_ret:
       name: "Boiler Return Temperature"
     rel_mod_level:
@@ -134,6 +143,12 @@ sensor:
     dhw_flow_rate:
       name: "DHW flow rate"
       id: dhw_flow
+  - platform: template
+    name: "heating state raw"
+    id: heating_state
+    update_interval: 2s
+    accuracy_decimals: 0
+
 
 # -----------------------------------------------------------------------------
 # INPUTS: VALVE STATUS FROM HOME ASSISTANT
@@ -142,12 +157,22 @@ binary_sensor:
   - platform: homeassistant
     name: "Valve Downstairs End-Stop"
     entity_id: binary_sensor.kincody_valve_valve_downstairs_open
-    id: valve_fb_downstairs
+    id: limit_sw_down
+    filters:
+      - delayed_on: 100ms
+    on_state:
+      then:
+        - script.execute: logic_engine
   
   - platform: homeassistant
     name: "Valve Upstairs End-Stop"
     entity_id: binary_sensor.kincody_valve_valve_upstairs_open
-    id: valve_fb_upstairs
+    id: limit_sw_up
+    filters:
+      - delayed_on: 100ms
+    on_state:
+      then:
+        - script.execute: logic_engine
 
   # Boiler Status
   - platform: opentherm
@@ -159,6 +184,17 @@ binary_sensor:
     dhw_active:
       name: "DHW Active"
       id: dhw_active_state
+
+  # Separate outputs for independent zone control
+  - platform: template
+    id: valve_demand_up
+    name: "Valve Demand Upstairs"
+    device_class: opening
+
+  - platform: template
+    id: valve_demand_down
+    name: "Valve Demand Downstairs"
+    device_class: opening
 
 # -----------------------------------------------------------------------------
 # LOGIC STORE: GLOBAL VARIABLES
@@ -172,6 +208,16 @@ globals:
     type: float
     restore_value: no
     initial_value: '0.0'
+  - id: demand_up
+    type: float
+    initial_value: '0.0'
+  - id: demand_down
+    type: float
+    initial_value: '0.0'
+  - id: system_state
+    type: int
+    initial_value: '0' # 0=Idle, 1=Heating, 2=Harvest
+
 
 # -----------------------------------------------------------------------------
 # CLIMATE CONTROLLERS (PID)
@@ -217,123 +263,118 @@ output:
     id: out_pid_down
     type: float
     write_action:
-      - lambda: |-
-          id(pid_out_downstairs) = state;
-      - if:
-          condition:
-            lambda: 'return state > ${pid_deadband};'
-          then:
-            - homeassistant.service:
-                service: switch.turn_on
-                data:
-                  entity_id: switch.kincody_valve_relay_downstairs
-          else:
-            - homeassistant.service:
-                service: switch.turn_off
-                data:
-                  entity_id: switch.kincody_valve_relay_downstairs
-      - script.execute: arbitrate_boiler_demand
+      - globals.set:
+          id: demand_down
+          value: !lambda 'return state;'
+      - script.execute: logic_engine
 
   - platform: template
     id: out_pid_up
     type: float
     write_action:
-      - lambda: |-
-          id(pid_out_upstairs) = state;
-      - if:
-          condition:
-            lambda: 'return state > ${pid_deadband};'
-          then:
-            - homeassistant.service:
-                service: switch.turn_on
-                data:
-                  entity_id: switch.kincody_valve_relay_upstairs
-          else:
-            - homeassistant.service:
-                service: switch.turn_off
-                data:
-                  entity_id: switch.kincody_valve_relay_upstairs
-      - script.execute: arbitrate_boiler_demand
+      - globals.set:
+          id: demand_up
+          value: !lambda 'return state;'
+      - script.execute: logic_engine
 
 # -----------------------------------------------------------------------------
-# MASTER ARBITRATION SCRIPT (The Interlock)
+# LOGIC CORE
 # -----------------------------------------------------------------------------
 script:
-  - id: arbitrate_boiler_demand
-    mode: restart
+  - id: logic_engine
+    mode: QUEUED
     then:
       - lambda: |-
-          // 1. Fetch Configuration & State
+          // 1. GATHER INPUTS
+          float d_up = id(demand_up);
+          float d_down = id(demand_down);
+          float flow_temp = id(boiler_flow_temp).state;
+
+          // Saftety Inputs: Check if valves are ACTUALLY open
+          bool sw_up = id(limit_sw_up).state;
+          bool sw_down = id(limit_sw_down).state;
+          // Global safety condition: At least one valve is open
+          bool valves_verified = (sw_up || sw_down);
+
           float max_t = ${max_flow_temp};
           float min_t = ${min_flow_temp};
           float deadband = ${pid_deadband};
+          float harvest_lim = ${harvest_cutoff};
+          float standby  = ${standby_setpoint};
           
-          float d_req = id(pid_out_downstairs);
-          float u_req = id(pid_out_upstairs);
-          
-          bool d_open = id(valve_fb_downstairs).state;
-          bool u_open = id(valve_fb_upstairs).state;
-          
-          // Debug Header
-          ESP_LOGD("logic", "=== HEATING LOGIC CYCLE (SCALED) ===");
-          
-          // 2. Define the Scaling Helper Function
-          // Maps PID (deadband -> 1.0) to (MinTemp -> MaxTemp)
-          auto calculate_setpoint = [&](float pid_val) -> float {
-            if (pid_val <= deadband) return 0.0;
+          // 2. DETERMINE HEAT DEMAND
+          bool need_up = (d_up > deadband);
+          bool need_down = (d_down > deadband);
+          bool any_demand = (need_up || need_down);
+          ESP_LOGI("logic", "***START*** UP demand: %s DOWN demand: %s ANY demand: %s   **UP=%.2f** **DOWN=%.2f**", need_up ? "TRUE" : "FALSE", need_down ? "TRUE" : "FALSE", any_demand ? "TRUE" : "FALSE", d_up, d_down);
+
+          // -------------------------------------------------------
+          // STATE 1: ACTIVE HEATING
+          // -------------------------------------------------------
+          if (any_demand) {
+            id(system_state) = 1;
             
-            // Normalize the PID value so 0.05 becomes 0.0, and 1.0 remains 1.0
-            float normalized_pid = (pid_val - deadband) / (1.0 - deadband);
+            // A. Actuate Valves
+            id(valve_demand_up).publish_state(need_up);
+            id(valve_demand_down).publish_state(need_down);
             
-            // Scale to the boiler's range
-            return min_t + (normalized_pid * (max_t - min_t));
-          };
-
-          // 3. Calculate Temperature Requirement per Zone
-          float d_target_temp = 0.0;
-          float u_target_temp = 0.0;
-          
-          if (d_req > deadband) {
-            if (d_open) {
-              d_target_temp = calculate_setpoint(d_req);
-              ESP_LOGI("logic", ">> Down Demand %.1f%% -> Req %.1f C", d_req*100.0, d_target_temp);
+            // B. Safety check & enable boiler
+            if (valves_verified) {
+              float max_d = std::max(d_up, d_down);
+              // Map 0-100% demand to 35-70C flow temp
+              float target = min_t + (max_d * (max_t - min_t)); 
+              
+              id(ot_ch_enable).turn_on();
+              id(ot_t_set).make_call().set_value(target).perform();
+              
+              ESP_LOGD("logic", "HEATING: Demand %.2f%, Target %.2f C", max_d*100.0, target);
             } else {
-              ESP_LOGW("logic", ">> Down WAITING: Valve Closed");
+              // Demand exists, but valves aren't open yet.
+              // Wait for limit switch interrupt to re-trigger this script.
+              id(ot_ch_enable).turn_off();
+              id(ot_t_set).make_call().set_value(0.0).perform();
+              ESP_LOGW("logic", "HEATING DELAY: Waiting for limit switches...");
             }
           }
           
-          if (u_req > deadband) {
-            if (u_open) {
-              u_target_temp = calculate_setpoint(u_req);
-              ESP_LOGI("logic", ">> Up   Demand %.1f%% -> Req %.1f C", u_req*100.0, u_target_temp);
+          // -------------------------------------------------------
+          // STATE 2: HARVEST / OVERRUN
+          // -------------------------------------------------------
+          else if (flow_temp > harvest_lim) {
+            id(system_state) = 2;
+            
+            // A. Valve Strategy: OPEN BOTH
+            id(valve_demand_up).publish_state(true);
+            id(valve_demand_down).publish_state(true);
+            
+            // B. Safety Check & Harvest Enable
+            if (valves_verified) {
+              // Keep CH Enable TRUE to power the pump.
+              id(ot_ch_enable).turn_on();
+
+              // Request low temp. Boiler sees Flow > 10C, so Burner=OFF, Pump=ON.
+              id(ot_t_set).make_call().set_value(standby).perform();
+              ESP_LOGD("logic", "HARVEST: Flow %.2f > %.2f. Recovering heat.", flow_temp, harvest_lim);
             } else {
-              ESP_LOGW("logic", ">> Up   WAITING: Valve Closed");
+              // Valves should be opening, but aren't there yet.
+              id(ot_ch_enable).turn_off();
+              ESP_LOGW("logic", "HARVEST DELAY: Waiting for limit switches...");
             }
           }
           
-          // 4. Aggregate Demand (MAX Operator)
-          float final_setpoint = std::max(d_target_temp, u_target_temp);
-          
-          // 5. Final Safety Clamp (Just in case math drifts slightly below min_t)
-          if (final_setpoint > 0 && final_setpoint < min_t) {
-             final_setpoint = min_t;
+          // -------------------------------------------------------
+          // STATE 3: IDLE
+          // -------------------------------------------------------
+          else {
+            id(system_state) = 0;
+            
+            // Shut down everything
+            id(valve_demand_up).publish_state(false);
+            id(valve_demand_down).publish_state(false);
+            id(ot_ch_enable).turn_off();
+            id(ot_t_set).make_call().set_value(0.0).perform();
+            
+            ESP_LOGD("logic", "IDLE: System resting.");
           }
-
-          // 6. Execute OpenTherm Command
-          ESP_LOGI("logic", ">>> FINAL SETPOINT: %.1f C", final_setpoint);
-          
-          auto call = id(ot_t_set).make_call();
-          call.set_value(final_setpoint);
-          call.perform();
-
-          // 7. Explicit CH Enable via Switch Entity
-          if (final_setpoint > 0) {
-            if (!id(ot_ch_enable).state) {
-               id(ot_ch_enable).turn_on();
-            }
-          } else {
-            if (id(ot_ch_enable).state) {
-               id(ot_ch_enable).turn_off();
-            }
-          }
-
+          id(heating_state).publish_state(id(system_state));
+          ESP_LOGI("logic", "***FINISH*** heating state: %d", id(system_state));
