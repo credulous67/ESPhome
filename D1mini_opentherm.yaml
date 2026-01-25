@@ -33,7 +33,7 @@ logger:
   baud_rate: 115200
   logs:
     esp32_ble_tracker: WARN
-    sensor: INFO
+    sensor: DEBUG
     binary_sensor: INFO
     opentherm: INFO
     pvvx_mithermometer: INFO
@@ -215,8 +215,8 @@ globals:
     type: float
     initial_value: '0.0'
   - id: system_state
-    type: int
-    initial_value: '0' # 0=Idle, 1=Heating, 2=Harvest
+    type: int 
+    initial_value: '0' # 0=Idle, 1=Heating(wait), 2=Heating, 3=Harvest
 
 
 # -----------------------------------------------------------------------------
@@ -312,14 +312,26 @@ script:
           // STATE 1: ACTIVE HEATING
           // -------------------------------------------------------
           if (any_demand) {
-            id(system_state) = 1;
             
             // A. Actuate Valves
-            id(valve_demand_up).publish_state(need_up);
-            id(valve_demand_down).publish_state(need_down);
+            // ensure valve limit switch and demand for valves are not out of step
+            if (sw_up == need_up) {
+              id(valve_demand_up).publish_state(need_up);
+            } else {
+              id(valve_demand_up).publish_state(false);
+              id(valve_demand_up).publish_state(need_up);
+            }
+
+            if (sw_down == need_down) {
+              id(valve_demand_down).publish_state(need_down);
+            } else {
+              id(valve_demand_down).publish_state(false);
+              id(valve_demand_down).publish_state(need_down);
+            }
             
             // B. Safety check & enable boiler
             if (valves_verified) {
+              id(system_state) = 2;
               float max_d = std::max(d_up, d_down);
               // Map 0-100% demand to 35-70C flow temp
               float target = min_t + (max_d * (max_t - min_t)); 
@@ -329,6 +341,7 @@ script:
               
               ESP_LOGD("logic", "HEATING: Demand %.2f%, Target %.2f C", max_d*100.0, target);
             } else {
+              id(system_state) = 1;
               // Demand exists, but valves aren't open yet.
               // Wait for limit switch interrupt to re-trigger this script.
               id(ot_ch_enable).turn_off();
@@ -341,7 +354,7 @@ script:
           // STATE 2: HARVEST / OVERRUN
           // -------------------------------------------------------
           else if (flow_temp > harvest_lim) {
-            id(system_state) = 2;
+            id(system_state) = 3;
             
             // A. Valve Strategy: OPEN BOTH
             id(valve_demand_up).publish_state(true);
