@@ -8,13 +8,13 @@ substitutions:
   devicename: "central-heating-controller"
   friendly_name: "Heating Logic Board"
   # Boiler Limits
-  max_flow_temp: "70.0"   # Maximum water temp the boiler is allowed to output
+  max_flow_temp: "55.0"   # Maximum water temp the boiler is allowed to output
   min_flow_temp: "35.0"   # Minimum effective temp (below this, efficiency gains diminish or boiler cycles)
   # Harvest thresholds
   harvest_cutoff: "30.0"    # Stop pumping when water is below this
   standby_setpoint: "10.0"  # Temp to request during harvest
   # PID Thresholds
-  pid_deadband: "0.05"    # 5% demand required to open valves (prevents micro-firing)
+  pid_deadband: "0.00"    # 5% demand required to open valves (prevents micro-firing)
 
 esphome:
   name: ${devicename}
@@ -227,8 +227,8 @@ climate:
     default_target_temperature: 20
     heat_output: out_pid_down
     control_parameters:
-      kp: 0.3
-      ki: 0.04
+      kp: 2
+      ki: 0
       kd: 0
     visual:
       min_temperature: 10
@@ -243,8 +243,8 @@ climate:
     default_target_temperature: 19
     heat_output: out_pid_up
     control_parameters:
-      kp: 0.3
-      ki: 0.04
+      kp: 2
+      ki: 0
       kd: 0
     visual:
       min_temperature: 10
