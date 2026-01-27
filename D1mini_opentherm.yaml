@@ -34,7 +34,7 @@ logger:
   logs:
     esp32_ble_tracker: WARN
     sensor: INFO
-    binary_sensor: INFO
+    binary_sensor: DEBUG
     opentherm: INFO
     pvvx_mithermometer: INFO
 
@@ -176,10 +176,12 @@ binary_sensor:
       name: "Flame Status"
     fault_indication:
       name: "Fault Status"
-    # NEW: DHW Active Status
     dhw_active:
-      name: "DHW Active"
+      name: "DHW active"
       id: dhw_active_state
+    ch_active:
+      name: "CH active"
+      id: ch_active_state
 
   # Separate outputs for independent zone control
   - platform: template
