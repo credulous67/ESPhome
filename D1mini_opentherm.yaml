@@ -227,7 +227,7 @@ climate:
     default_target_temperature: 20
     heat_output: out_pid_down
     control_parameters:
-      kp: 0.3
+      kp: 0.1
       ki: 0.004
       kd: 0
     visual:
@@ -243,7 +243,7 @@ climate:
     default_target_temperature: 19
     heat_output: out_pid_up
     control_parameters:
-      kp: 0.3
+      kp: 0.1
       ki: 0.004
       kd: 0
     visual:
