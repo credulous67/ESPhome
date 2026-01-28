@@ -88,8 +88,10 @@ switch:
 # -----------------------------------------------------------------------------
 esp32_ble_tracker:
   scan_parameters:
-    interval: 300ms
-    window: 200ms
+    interval: 320ms
+    window: 30ms
+    active: false
+    continuous: true
 
 sensor:
   # ---------------------------------------------------------------------------
